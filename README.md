@@ -53,5 +53,3 @@ livesense-sentiment-analyzer/
 └── README.md             # Project documentation
 ```
 
-## 👤 Author
-Made by **Anmol**
