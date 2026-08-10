@@ -4,9 +4,74 @@ import re
 from collections import deque
 import plotly.graph_objects as go
 import plotly.express as px
-from textblob import TextBlob
 import pandas as pd
 import math
+
+# ── NLTK path-security fix ──────────────────────────────────────────────────────
+# Newer NLTK versions enforce path-security and reject the Windows Store Python
+# AppData path for nltk_data.  We redirect NLTK to a local folder inside the
+# project that is always within an approved root, then download the required
+# corpora if they are not already present.
+import os, pathlib, nltk
+
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent  # …/sentiment analysis/
+_LOCAL_NLTK   = _PROJECT_ROOT / "nltk_data"
+_LOCAL_NLTK.mkdir(exist_ok=True)
+
+# Prepend our trusted path so NLTK finds data here first
+if str(_LOCAL_NLTK) not in nltk.data.path:
+    nltk.data.path.insert(0, str(_LOCAL_NLTK))
+
+# Download required corpora into the trusted local folder (silently skips if present)
+for _corpus in ("punkt_tab", "punkt", "averaged_perceptron_tagger"):
+    try:
+        nltk.download(_corpus, download_dir=str(_LOCAL_NLTK), quiet=True)
+    except Exception:
+        pass
+# ───────────────────────────────────────────────────────────────────────────────
+
+from textblob import TextBlob
+
+import streamlit.components.v1 as components
+
+# Language detection (graceful fallback if langdetect not installed)
+try:
+    from langdetect import detect as _lang_detect
+    from langdetect import DetectorFactory
+    DetectorFactory.seed = 0          # make results deterministic
+    _LANG_DETECT_AVAILABLE = True
+except ImportError:
+    _LANG_DETECT_AVAILABLE = False
+
+# Map ISO 639-1 codes → (flag emoji, English name)
+_LANG_MAP = {
+    "en": ("🇬🇧", "English"),  "hi": ("🇮🇳", "Hindi"),
+    "fr": ("🇫🇷", "French"),   "de": ("🇩🇪", "German"),
+    "es": ("🇪🇸", "Spanish"),  "it": ("🇮🇹", "Italian"),
+    "pt": ("🇧🇷", "Portuguese"), "nl": ("🇳🇱", "Dutch"),
+    "ru": ("🇷🇺", "Russian"),   "zh": ("🇨🇳", "Chinese"),
+    "ja": ("🇯🇵", "Japanese"),  "ko": ("🇰🇷", "Korean"),
+    "ar": ("🇸🇦", "Arabic"),    "tr": ("🇹🇷", "Turkish"),
+    "pl": ("🇵🇱", "Polish"),    "sv": ("🇸🇪", "Swedish"),
+    "da": ("🇩🇰", "Danish"),    "fi": ("🇫🇮", "Finnish"),
+    "no": ("🇳🇴", "Norwegian"), "cs": ("🇨🇿", "Czech"),
+    "ro": ("🇷🇴", "Romanian"),  "hu": ("🇭🇺", "Hungarian"),
+    "uk": ("🇺🇦", "Ukrainian"), "vi": ("🇻🇳", "Vietnamese"),
+    "th": ("🇹🇭", "Thai"),      "id": ("🇮🇩", "Indonesian"),
+    "ms": ("🇲🇾", "Malay"),     "bn": ("🇧🇩", "Bengali"),
+    "ta": ("🇮🇳", "Tamil"),     "ur": ("🇵🇰", "Urdu"),
+}
+
+def detect_language(text: str) -> dict:
+    """Return {code, flag, name} for the detected language."""
+    if not _LANG_DETECT_AVAILABLE or not text or len(text.split()) < 8:
+        return {"lang_code": "en", "lang_flag": "🇬🇧", "lang_name": "English"}
+    try:
+        code = _lang_detect(text)
+        flag, name = _LANG_MAP.get(code, ("🌐", code.upper()))
+        return {"lang_code": code, "lang_flag": flag, "lang_name": name}
+    except Exception:
+        return {"lang_code": "?", "lang_flag": "🌐", "lang_name": "Unknown"}
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -234,6 +299,25 @@ html, body, [class*="css"] {
 .sent-neg { background: rgba(248,113,113,0.08); border-left-color: #f87171; }
 .sent-neu { background: rgba(148,163,184,0.06); border-left-color: #475569; }
 
+/* ── Emotion chip ── */
+.emotion-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.55rem;
+    padding: 0.28rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    width: fit-content;
+}
+.emotion-happy { background: rgba(52,211,153,0.15); border: 1px solid rgba(52,211,153,0.35); color: #34d399; }
+.emotion-angry { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.35); color: #f87171; }
+.emotion-sad { background: rgba(96,165,250,0.15); border: 1px solid rgba(96,165,250,0.35); color: #60a5fa; }
+.emotion-fear { background: rgba(251,191,36,0.15); border: 1px solid rgba(251,191,36,0.35); color: #fbbf24; }
+.emotion-calm { background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.25); color: #94a3b8; }
+
 /* ── Emoji indicator ── */
 .emoji-big {
     font-size: 3rem;
@@ -309,8 +393,63 @@ NEGATIVE_WORDS = {
     "hopeless","helpless","worthless","meaningless","pointless","disgusted","enraged",
 }
 
+# Emotion lexicons (beyond simple positive/negative)
+EMOTION_WORDS = {
+    "happy": {
+        "happy", "joy", "joyful", "glad", "cheerful", "excited", "thrilled",
+        "delighted", "love", "loving", "smile", "laugh", "fun", "wonderful",
+        "amazing", "awesome", "grateful", "proud", "hope", "hopeful",
+    },
+    "angry": {
+        "angry", "anger", "furious", "mad", "annoyed", "frustrated", "rage",
+        "enraged", "hate", "hateful", "irritated", "outraged", "disgusted",
+    },
+    "sad": {
+        "sad", "unhappy", "depressed", "miserable", "lonely", "alone", "cry",
+        "crying", "grief", "heartbroken", "hopeless", "empty", "down", "upset",
+        "disappointed", "hurt",
+    },
+    "fear": {
+        "fear", "scared", "afraid", "worried", "anxious", "nervous", "panic",
+        "stressed", "terrified", "uneasy", "insecure",
+    },
+    "calm": {
+        "calm", "peaceful", "relaxed", "quiet", "gentle", "soft", "steady",
+        "balanced", "content", "serene", "okay", "fine", "alright",
+    },
+}
+
+EMOTION_META = {
+    "happy": ("😊", "Happy"),
+    "angry": ("😠", "Angry"),
+    "sad": ("😢", "Sad"),
+    "fear": ("😨", "Fearful"),
+    "calm": ("😌", "Calm"),
+}
+
 def clean_word(w: str) -> str:
     return re.sub(r"[^a-z']", "", w.lower())
+
+def detect_emotion(text: str, polarity: float) -> dict:
+    """Detect dominant emotion from keyword hits + polarity fallback."""
+    words = [clean_word(w) for w in text.split() if clean_word(w)]
+    scores = {name: 0 for name in EMOTION_WORDS}
+    for w in words:
+        for name, lexicon in EMOTION_WORDS.items():
+            if w in lexicon:
+                scores[name] += 1
+
+    best = max(scores, key=scores.get)
+    if scores[best] == 0:
+        if polarity > 0.2:
+            best = "happy"
+        elif polarity < -0.35:
+            best = "angry" if polarity < -0.55 else "sad"
+        else:
+            best = "calm"
+
+    emoji, label = EMOTION_META[best]
+    return {"emotion": best, "emotion_label": label, "emotion_emoji": emoji, "emotion_scores": scores}
 
 def analyze_text(text: str) -> dict:
     """Full sentiment analysis of the given text."""
@@ -322,6 +461,8 @@ def analyze_text(text: str) -> dict:
             "word_count": 0, "char_count": 0,
             "pos_count": 0, "neg_count": 0,
             "mood_history": [],
+            "emotion": "calm", "emotion_label": "Calm", "emotion_emoji": "😌",
+            "emotion_scores": {k: 0 for k in EMOTION_WORDS},
         }
 
     blob = TextBlob(text)
@@ -373,6 +514,9 @@ def analyze_text(text: str) -> dict:
         label = "mixed"
         emoji = "🤔"
 
+    emotion   = detect_emotion(text, polarity)
+    lang_info = detect_language(text)
+
     return {
         "polarity": round(polarity, 4),
         "subjectivity": round(subjectivity, 4),
@@ -384,6 +528,8 @@ def analyze_text(text: str) -> dict:
         "char_count": len(text),
         "pos_count": pos_count,
         "neg_count": neg_count,
+        **emotion,
+        **lang_info,
     }
 
 
@@ -624,17 +770,158 @@ with left_col:
         "mixed":    "Mixed Sentiment",
     }
     if user_text and user_text.strip():
+        emotion       = result["emotion"]
+        emotion_label = result["emotion_label"]
+        emotion_emoji = result["emotion_emoji"]
+        lang_flag     = result["lang_flag"]
+        lang_name     = result["lang_name"]
         st.markdown(f"""
         <div class="sentiment-banner {bclass}">
             <span class="emoji-big">{emoji}</span>
-            <div>
+            <div style="flex:1;">
                 <div style="font-size:1.3rem;font-weight:800;">{label_text_map[label]}</div>
                 <div style="font-size:0.85rem;opacity:0.7;font-weight:400;margin-top:2px;">
                     Polarity: {polarity:+.3f} &nbsp;·&nbsp; Subjectivity: {result['subjectivity']:.0%}
                 </div>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.4rem;">
+                    <div class="emotion-chip emotion-{emotion}">
+                        {emotion_emoji} {emotion_label}
+                    </div>
+                    <div class="emotion-chip emotion-calm" style="background:rgba(129,140,248,0.12);border-color:rgba(129,140,248,0.3);color:#818cf8;">
+                        {lang_flag} {lang_name}
+                    </div>
+                </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # ── Action buttons: TTS + Export TXT + Copy ────────────────────────────
+        safe_text   = user_text.replace("'", "\\'").replace("\n", " ").replace("\r", "")
+
+        # Build sentence breakdown lines
+        sent_lines = ""
+        for i, s in enumerate(result["sentences"], 1):
+            sent_lines += f"  [{i}] {s['polarity']:+.3f}  {s['text'][:100]}\n"
+        if not sent_lines:
+            sent_lines = "  (single sentence)\n"
+
+        _sep  = "=" * 52
+        _dash = "\u2500" * 40
+        export_txt = "\n".join([
+            _sep,
+            "          LiveSense \u2014 Sentiment Analysis Report",
+            _sep,
+            "",
+            "\U0001F4DD TEXT",
+            _dash,
+            user_text,
+            "",
+            "\U0001F4CA OVERALL SENTIMENT",
+            _dash,
+            f"  Sentiment   : {result['label'].title()}",
+            f"  Polarity    : {result['polarity']:+.4f}  (range \u22121 to +1)",
+            f"  Subjectivity: {result['subjectivity']:.0%}",
+            "",
+            "\U0001F3AD EMOTION & LANGUAGE",
+            _dash,
+            f"  Emotion  : {result['emotion_emoji']} {result['emotion_label']}",
+            f"  Language : {result['lang_flag']} {result['lang_name']}",
+            "",
+            "\U0001F522 WORD STATS",
+            _dash,
+            f"  Total words : {result['word_count']}",
+            f"  Characters  : {result['char_count']}",
+            f"  Positive \u2713  : {result['pos_count']}",
+            f"  Negative \u2717  : {result['neg_count']}",
+            "",
+            "\U0001F4DD SENTENCE BREAKDOWN",
+            _dash,
+            sent_lines,
+            _sep,
+            "Generated by LiveSense \u00b7 Real-Time Sentiment Analyzer",
+            _sep,
+        ])
+
+
+        acol1, acol2, acol3 = st.columns(3)
+        with acol1:
+            # Text-to-speech via Web Speech API
+            components.html(f"""
+            <div style="text-align:center;">
+                <button id="tts-btn" onclick="window._liveSenseTTS()" style="
+                    background: linear-gradient(135deg,#818cf8,#a78bfa);
+                    color:white; border:none; border-radius:10px;
+                    padding:0.5rem 1.2rem; font-size:0.85rem;
+                    font-weight:600; cursor:pointer; width:100%;
+                    font-family:Inter,sans-serif; transition: all 0.3s;
+                ">🔊 Read Aloud</button>
+            </div>
+            <script>
+            window._liveSenseTTS = function() {{
+                var btn = document.getElementById('tts-btn');
+                if (window.speechSynthesis.speaking) {{
+                    window.speechSynthesis.cancel();
+                    btn.textContent = '🔊 Read Aloud';
+                    return;
+                }}
+                var utter = new SpeechSynthesisUtterance('{safe_text}');
+                utter.lang = '{result["lang_code"]}';
+                utter.rate = 0.95;
+                utter.pitch = 1.0;
+                utter.onstart = function() {{ btn.textContent = '⏹ Stop Reading'; }};
+                utter.onend   = function() {{ btn.textContent = '🔊 Read Aloud'; }};
+                window.speechSynthesis.speak(utter);
+            }};
+            </script>
+            """, height=52)
+
+        with acol2:
+            # Export as TXT — encode to bytes ourselves so surrogate emoji (flag chars) don't crash Streamlit
+            try:
+                _txt_bytes = export_txt.encode("utf-8")
+            except UnicodeEncodeError:
+                # Fallback: strip surrogates if any slipped through
+                _txt_bytes = export_txt.encode("utf-8", errors="replace")
+            st.download_button(
+                label="📄 Export TXT",
+                data=_txt_bytes,
+                file_name="livesense_analysis.txt",
+                mime="text/plain; charset=utf-8",
+                use_container_width=True,
+            )
+
+        with acol3:
+            # Copy to clipboard via JS
+            summary_text = (
+                f"LiveSense Analysis\n"
+                f"Sentiment: {result['label'].title()} ({result['polarity']:+.3f})\n"
+                f"Emotion: {result['emotion_label']}\n"
+                f"Language: {result['lang_name']}\n"
+                f"Subjectivity: {result['subjectivity']:.0%}\n"
+                f"Words: {result['word_count']} | Positive: {result['pos_count']} | Negative: {result['neg_count']}"
+            ).replace("'", "\\'").replace("\n", "\\n")
+            components.html(f"""
+            <div style="text-align:center;">
+                <button id="copy-btn" onclick="window._copyResult()" style="
+                    background: linear-gradient(135deg,#818cf8,#a78bfa);
+                    color:white; border:none; border-radius:10px;
+                    padding:0.5rem 1.2rem; font-size:0.85rem;
+                    font-weight:600; cursor:pointer; width:100%;
+                    font-family:Inter,sans-serif; transition: all 0.3s;
+                ">📋 Copy Results</button>
+            </div>
+            <script>
+            window._copyResult = function() {{
+                var text = '{summary_text}';
+                navigator.clipboard.writeText(text.replace(/\\\\n/g,'\\n')).then(function() {{
+                    var btn = document.getElementById('copy-btn');
+                    btn.textContent = '✅ Copied!';
+                    setTimeout(function() {{ btn.textContent = '📋 Copy Results'; }}, 2000);
+                }});
+            }};
+            </script>
+            """, height=52)
+
     else:
         st.markdown("""
         <div class="sentiment-banner banner-neutral">
@@ -779,6 +1066,7 @@ with right_col:
             tips.append(("📋", "Very objective and factual writing style."))
         if result["pos_count"] > 0 and result["neg_count"] > 0:
             tips.append(("⚖️", "Mixed sentiments — both positive and negative words present."))
+        tips.append((result["emotion_emoji"], f"Overall emotion leans toward {result['emotion_label'].lower()}."))
         if wc > 0 and wc < 5:
             tips.append(("📝", "Type more for a more accurate analysis."))
 
