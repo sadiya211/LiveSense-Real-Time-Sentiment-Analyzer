@@ -9,6 +9,7 @@
 
 ---
 
+
 ## 🚀 Features
 
 ### 🔴 Live Analysis
@@ -86,6 +87,9 @@ Open your browser at **http://localhost:8501**
 > **Note:** On first run, NLTK data (`punkt_tab`) is automatically downloaded into the
 > local `nltk_data/` folder inside the project — no manual steps needed.
 
+## 🚀 Live Demo
+
+👉 [Open LiveSense App](https://livesense-real-time-sentiment-analyzer-25vfarqqrgw9xcjvj9vyyv.streamlit.app)
 ---
 
 ## 📁 Project Structure
@@ -152,12 +156,3 @@ Output :
 
 ---
 
-## 👤 Author
-
-Made with ❤️ by **Anmol**
-
----
-
-## 📄 License
-
-This project is open source and available under the [MIT License](LICENSE).
